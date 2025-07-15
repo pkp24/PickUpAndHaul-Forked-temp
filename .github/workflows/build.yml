@@ -1,0 +1,162 @@
+name: Build & Commit RimWorld DLL
+
+################################################################################
+# Adjust only if you move folders
+################################################################################
+env:
+  IHM_SRC_PATH: Source/IHoldMultipleThings  # IHoldMultipleThings .csproj
+  MOD_SRC_PATH: Source/PickUpAndHaul        # PickUpAndHaul .csproj
+  DLL_DEST_PATH: 1.6/Assemblies             # final DLL location (repo-root/1.6/Assemblies)
+
+################################################################################
+# Build on pushes/PRs to any branch
+################################################################################
+on:
+  push:
+    paths-ignore:
+      - '1.6/Assemblies/*.dll'
+      - '**/*.dll'
+      - '**/*.xml'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.md'
+      - '**/*.txt'
+      - '**/*.license'
+      - '**/*.gitignore'
+      - '**/*.gitattributes'
+      - '**/*.editorconfig'
+      - '**/*.vsconfig'
+      - '**/*.vspscc'
+      - '**/*.vssscc'
+      - '**/*.suo'
+      - '**/*.user'
+      - '**/*.cache'
+      - '**/*.log'
+      - '**/*.tmp'
+      - '**/*.temp'
+      - '**/obj/**'
+      - '**/bin/**'
+      - '**/node_modules/**'
+      - '**/.vs/**'
+      - '**/.git/**'
+      - '**/.github/**'
+      - '**/README.md'
+      - '**/LICENSE'
+      - '**/CHANGELOG.md'
+      - '**/CONTRIBUTING.md'
+  pull_request:
+    paths-ignore:
+      - '1.6/Assemblies/*.dll'
+      - '**/*.dll'
+      - '**/*.xml'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.md'
+      - '**/*.txt'
+      - '**/*.license'
+      - '**/*.gitignore'
+      - '**/*.gitattributes'
+      - '**/*.editorconfig'
+      - '**/*.vsconfig'
+      - '**/*.vspscc'
+      - '**/*.vssscc'
+      - '**/*.suo'
+      - '**/*.user'
+      - '**/*.cache'
+      - '**/*.log'
+      - '**/*.tmp'
+      - '**/*.temp'
+      - '**/obj/**'
+      - '**/bin/**'
+      - '**/node_modules/**'
+      - '**/.vs/**'
+      - '**/.git/**'
+      - '**/.github/**'
+      - '**/README.md'
+      - '**/LICENSE'
+      - '**/CHANGELOG.md'
+      - '**/CONTRIBUTING.md'
+
+################################################################################
+# Job: compile → copy DLL → commit & push
+# Entire job is skipped if the pusher is github-actions[bot]
+################################################################################
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+
+    steps:
+    # 1️⃣ Check out code so we can commit later
+    - name: Check out repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: true        # we'll push back with GITHUB_TOKEN
+
+    # 2️⃣ Install .NET SDK 8 (includes .NET Framework ref-packs)
+    - name: Set up .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '8.0.x'
+
+    # 3️⃣ Restore NuGet packages for both projects
+    - name: Restore packages
+      run: |
+        dotnet restore "${{ env.IHM_SRC_PATH }}"
+        dotnet restore "${{ env.MOD_SRC_PATH }}"
+
+    # 4️⃣ Build IHoldMultipleThings first (dependency)
+    - name: Build IHoldMultipleThings
+      run: dotnet build "${{ env.IHM_SRC_PATH }}" --no-restore
+
+    # 5️⃣ Build PickUpAndHaul (depends on IHoldMultipleThings)
+    - name: Build PickUpAndHaul
+      run: dotnet build "${{ env.MOD_SRC_PATH }}" --no-restore
+
+    # 6️⃣ Verify DLLs were built to the correct location
+    - name: Verify built DLLs
+      shell: pwsh
+      run: |
+        $dest = Join-Path $env:GITHUB_WORKSPACE '${{ env.DLL_DEST_PATH }}'
+        
+        # Check if IHoldMultipleThings.dll exists
+        $ihmDll = Join-Path $dest 'IHoldMultipleThings.dll'
+        if (Test-Path $ihmDll) {
+          Write-Host "✓ IHoldMultipleThings.dll found at $ihmDll"
+        } else {
+          Write-Host "✗ IHoldMultipleThings.dll not found at $ihmDll"
+          exit 1
+        }
+
+        # Check if PickUpAndHaul.dll exists
+        $modDll = Join-Path $dest 'PickUpAndHaul.dll'
+        if (Test-Path $modDll) {
+          Write-Host "✓ PickUpAndHaul.dll found at $modDll"
+        } else {
+          Write-Host "✗ PickUpAndHaul.dll not found at $modDll"
+          exit 1
+        }
+
+    # 7️⃣ Commit & push the built DLL(s) back to the current branch
+    - name: Commit built DLLs
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        git add ${{ env.DLL_DEST_PATH }}/*.dll
+
+        # commit only if there are changes
+        if ! git diff --cached --quiet; then
+          git commit -m "CI: update built DLL from $GITHUB_SHA"
+          git push origin HEAD:${GITHUB_REF#refs/heads/}
+          echo "DLL committed & pushed."
+        else
+          echo "No DLL changes to commit."
+        fi

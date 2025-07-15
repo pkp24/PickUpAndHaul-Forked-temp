@@ -1,8 +1,20 @@
 ﻿namespace PickUpAndHaul;
 public class PawnUnloadChecker
 {
-	public static void CheckIfPawnShouldUnloadInventory(Pawn pawn, bool forced = false)
-	{
+        public static void CheckIfPawnShouldUnloadInventory(Pawn pawn, bool forced = false)
+        {
+                // Check if save operation is in progress
+                if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+                {
+                        return; // Skip unload checking during save operations
+                }
+
+        // Ignore pawns that are currently in a mental state
+        if (pawn == null || pawn.InMentalState)
+        {
+            return;
+        }
+
 		var job = JobMaker.MakeJob(PickUpAndHaulJobDefOf.UnloadYourHauledInventory, pawn);
 		var itemsTakenToInventory = pawn?.GetComp<CompHauledToInventory>();
 
@@ -11,6 +23,9 @@ public class PawnUnloadChecker
 			return;
 		}
 
+		// Clean up nulls at a safe point before accessing the collection
+		itemsTakenToInventory.CleanupNulls();
+		
 		var carriedThing = itemsTakenToInventory.GetHashSet();
 
 		if (pawn.Faction != Faction.OfPlayerSilentFail || !Settings.IsAllowedRace(pawn.RaceProps)
@@ -42,9 +57,11 @@ public class PawnUnloadChecker
 			}
 		}
 
-		if (Find.TickManager.TicksGame % 50 == 0 && inventoryContainer.Count < carriedThing.Count)
+		// Stagger inventory sync checks to prevent all pawns checking at once
+		var staggeredCheck = (Find.TickManager.TicksGame + (pawn.thingIDNumber % 50)) % 50 == 0;
+		if (staggeredCheck && inventoryContainer.Count < carriedThing.Count)
 		{
-			Verse.Log.Warning("[PickUpAndHaul] " + pawn + " inventory was found out of sync with haul index. Pawn will drop their inventory.");
+			Log.Warning("[PickUpAndHaul] " + pawn + " inventory was found out of sync with haul index. Pawn will drop their inventory.");
 			carriedThing.Clear();
 			pawn.inventory.UnloadEverything = true;
 		}

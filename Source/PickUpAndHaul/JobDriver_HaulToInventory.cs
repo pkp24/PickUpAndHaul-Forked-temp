@@ -3,17 +3,148 @@
 namespace PickUpAndHaul;
 public class JobDriver_HaulToInventory : JobDriver
 {
+	public override void ExposeData()
+	{
+		// Don't save any data for this job driver to prevent save corruption
+		// when the mod is removed
+		if (Scribe.mode == LoadSaveMode.Saving)
+		{
+			Log.Message("[PickUpAndHaul] Skipping save data for HaulToInventory job driver");
+			return;
+		}
+		
+		// Only load data if we're in loading mode and the mod is active
+		if (Scribe.mode == LoadSaveMode.LoadingVars)
+		{
+			Log.Message("[PickUpAndHaul] Skipping load data for HaulToInventory job driver");
+			return;
+		}
+	}
+
 	public override bool TryMakePreToilReservations(bool errorOnFailed)
 	{
-		Log.Message($"{pawn} starting HaulToInventory job: {job.targetQueueA.ToStringSafeEnumerable()}:{job.countQueue.ToStringSafeEnumerable()}");
-		pawn.ReserveAsManyAsPossible(job.targetQueueA, job);
-		pawn.ReserveAsManyAsPossible(job.targetQueueB, job);
-		return pawn.Reserve(job.targetQueueA[0], job) && pawn.Reserve(job.targetB, job);
+		// Check if save operation is in progress
+		if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+		{
+			Log.Message($"[PickUpAndHaul] Skipping HaulToInventory job reservations during save operation for {pawn}");
+			return false;
+		}
+
+		// Validate job before making reservations
+		if (!ValidateJobBeforeExecution())
+		{
+			Log.Error($"[PickUpAndHaul] Job validation failed for {pawn}, cannot make reservations");
+			return false;
+		}
+
+		// EXTENSIVE DEBUGGING - Track job state
+		Log.Message($"[PickUpAndHaul] DEBUG: {pawn} starting HaulToInventory job reservations");
+		Log.Message($"[PickUpAndHaul] DEBUG: Job targetA: {job.targetA.ToStringSafe()}");
+		Log.Message($"[PickUpAndHaul] DEBUG: Job targetB: {job.targetB.ToStringSafe()}");
+		Log.Message($"[PickUpAndHaul] DEBUG: Job targetQueueA count: {job.targetQueueA?.Count ?? 0}");
+		Log.Message($"[PickUpAndHaul] DEBUG: Job targetQueueB count: {job.targetQueueB?.Count ?? 0}");
+		Log.Message($"[PickUpAndHaul] DEBUG: Job countQueue count: {job.countQueue?.Count ?? 0}");
+		
+		if (job.targetQueueA != null)
+		{
+			Log.Message($"[PickUpAndHaul] DEBUG: targetQueueA contents: {string.Join(", ", job.targetQueueA.Select(t => t.ToStringSafe()))}");
+		}
+		if (job.targetQueueB != null)
+		{
+			Log.Message($"[PickUpAndHaul] DEBUG: targetQueueB contents: {string.Join(", ", job.targetQueueB.Select(t => t.ToStringSafe()))}");
+		}
+		if (job.countQueue != null)
+		{
+			Log.Message($"[PickUpAndHaul] DEBUG: countQueue contents: {string.Join(", ", job.countQueue)}");
+		}
+
+		// Validate queue synchronization
+		if (job.targetQueueA != null && job.countQueue != null && job.targetQueueA.Count != job.countQueue.Count)
+		{
+			Log.Error($"[PickUpAndHaul] CRITICAL: Queue synchronization error! targetQueueA.Count ({job.targetQueueA.Count}) != countQueue.Count ({job.countQueue.Count}) for {pawn}");
+			Log.Error($"[PickUpAndHaul] CRITICAL: This indicates a bug in AllocateThingAtCell or job creation logic");
+		}
+
+		// Validate job integrity before proceeding
+		WorkGiver_HaulToInventory.ValidateJobQueues(job, pawn, "PreToilReservations");
+
+		// Reserve as many as possible from queues
+		if (job.targetQueueA != null && job.targetQueueA.Count > 0)
+		{
+			Log.Message($"[PickUpAndHaul] DEBUG: Reserving {job.targetQueueA.Count} items from targetQueueA");
+			pawn.ReserveAsManyAsPossible(job.targetQueueA, job);
+		}
+		else
+		{
+			Log.Warning($"[PickUpAndHaul] WARNING: targetQueueA is null or empty for {pawn}");
+		}
+
+		if (job.targetQueueB != null && job.targetQueueB.Count > 0)
+		{
+			Log.Message($"[PickUpAndHaul] DEBUG: Reserving {job.targetQueueB.Count} items from targetQueueB");
+			pawn.ReserveAsManyAsPossible(job.targetQueueB, job);
+		}
+		else
+		{
+			Log.Warning($"[PickUpAndHaul] WARNING: targetQueueB is null or empty for {pawn}");
+		}
+
+		// FIXED: Add bounds checking before accessing targetQueueA[0]
+		bool targetAReserved = false;
+		if (job.targetQueueA != null && job.targetQueueA.Count > 0)
+		{
+			Log.Message($"[PickUpAndHaul] DEBUG: Reserving targetQueueA[0]: {job.targetQueueA[0]}");
+			targetAReserved = pawn.Reserve(job.targetQueueA[0], job);
+		}
+		else
+		{
+			Log.Error($"[PickUpAndHaul] ERROR: Cannot reserve targetQueueA[0] - queue is null or empty for {pawn}");
+			Log.Error($"[PickUpAndHaul] ERROR: This job should not have been created with empty targetQueueA");
+			Log.Error($"[PickUpAndHaul] ERROR: Job state - targetQueueA: {job.targetQueueA?.Count ?? 0}, targetQueueB: {job.targetQueueB?.Count ?? 0}, countQueue: {job.countQueue?.Count ?? 0}");
+			
+			// CRITICAL FIX: End the job gracefully instead of crashing
+			Log.Error($"[PickUpAndHaul] ERROR: Ending job gracefully to prevent ArgumentOutOfRangeException");
+			return false;
+		}
+
+		bool targetBReserved = false;
+		if (job.targetB != null)
+		{
+			Log.Message($"[PickUpAndHaul] DEBUG: Reserving targetB: {job.targetB}");
+			targetBReserved = pawn.Reserve(job.targetB, job);
+		}
+		else
+		{
+			Log.Error($"[PickUpAndHaul] ERROR: targetB is null for {pawn}");
+			return false;
+		}
+
+		var result = targetAReserved && targetBReserved;
+		Log.Message($"[PickUpAndHaul] DEBUG: Reservation result: {result} (targetA: {targetAReserved}, targetB: {targetBReserved})");
+		
+		return result;
 	}
 
 	//get next, goto, take, check for more. Branches off to "all over the place"
 	public override IEnumerable<Toil> MakeNewToils()
 	{
+		
+		// CRITICAL FIX: Validate job integrity before proceeding
+		if (!ValidateJobBeforeExecution())
+		{
+			Log.Error($"[PickUpAndHaul] Job validation failed for {pawn} in MakeNewToils");
+			EndJobWith(JobCondition.Incompletable);
+			yield break;
+		}
+		
+		// Check if save operation is in progress at the start
+		if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+		{
+			Log.Message($"[PickUpAndHaul] Ending HaulToInventory job during save operation for {pawn}");
+			EndJobWith(JobCondition.InterruptForced);
+			yield break;
+		}
+
 		var takenToInventory = pawn.TryGetComp<CompHauledToInventory>();
 
 		var wait = Toils_General.Wait(2);
@@ -25,7 +156,16 @@ public class JobDriver_HaulToInventory : JobDriver
 
 		var gotoThing = new Toil
 		{
-			initAction = () => pawn.pather.StartPath(TargetThingA, PathEndMode.ClosestTouch),
+			initAction = () => 
+			{
+				// Check for save operation before pathing
+				if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+				{
+					EndJobWith(JobCondition.InterruptForced);
+					return;
+				}
+				pawn.pather.StartPath(TargetThingA, PathEndMode.ClosestTouch);
+			},
 			defaultCompleteMode = ToilCompleteMode.PatherArrival
 		};
 		gotoThing.FailOnDespawnedNullOrForbidden(TargetIndex.A);
@@ -35,6 +175,13 @@ public class JobDriver_HaulToInventory : JobDriver
 		{
 			initAction = () =>
 			{
+				// Check for save operation before taking action
+				if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+				{
+					EndJobWith(JobCondition.InterruptForced);
+					return;
+				}
+
 				var actor = pawn;
 				var thing = actor.CurJob.GetTarget(TargetIndex.A).Thing;
 				Toils_Haul.ErrorCheckForCarry(actor, thing);
@@ -65,7 +212,7 @@ public class JobDriver_HaulToInventory : JobDriver
 				//This will technically release the reservations in the queue, but what can you do
 				if (thing.Spawned)
 				{
-					var haul = HaulAIUtility.HaulToStorageJob(actor, thing);
+					var haul = HaulAIUtility.HaulToStorageJob(actor, thing, false);
 					if (haul?.TryMakePreToilReservations(actor, false) ?? false)
 					{
 						actor.jobs.jobQueue.EnqueueFirst(haul, JobTag.Misc);
@@ -82,6 +229,13 @@ public class JobDriver_HaulToInventory : JobDriver
 		{
 			initAction = () =>
 			{
+				// Check for save operation before finding more work
+				if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+				{
+					EndJobWith(JobCondition.InterruptForced);
+					return;
+				}
+
 				var haulables = TempListForThings;
 				haulables.Clear();
 				haulables.AddRange(pawn.Map.listerHaulables.ThingsPotentiallyNeedingHauling());
@@ -113,6 +267,13 @@ public class JobDriver_HaulToInventory : JobDriver
 		{
 			initAction = () =>
 			{
+				// Check for save operation before queuing next job
+				if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+				{
+					EndJobWith(JobCondition.InterruptForced);
+					return;
+				}
+
 				var actor = pawn;
 				var curJob = actor.jobs.curJob;
 				var storeCell = curJob.targetB;
@@ -146,6 +307,13 @@ public class JobDriver_HaulToInventory : JobDriver
 
 		toil.initAction = () =>
 		{
+			// Check for save operation before checking encumbrance
+			if (PickupAndHaulSaveLoadLogger.IsSaveInProgress())
+			{
+				EndJobWith(JobCondition.InterruptForced);
+				return;
+			}
+
 			var actor = toil.actor;
 			var curJob = actor.jobs.curJob;
 			var nextThing = curJob.targetA.Thing;
@@ -154,7 +322,7 @@ public class JobDriver_HaulToInventory : JobDriver
 
 			if (!(MassUtility.EncumbrancePercent(actor) <= 0.9f && !ceOverweight))
 			{
-				var haul = HaulAIUtility.HaulToStorageJob(actor, nextThing);
+				var haul = HaulAIUtility.HaulToStorageJob(actor, nextThing, false);
 				if (haul?.TryMakePreToilReservations(actor, false) ?? false)
 				{
 					//note that HaulToStorageJob etc doesn't do opportunistic duplicate hauling for items in valid storage. REEEE
@@ -165,5 +333,77 @@ public class JobDriver_HaulToInventory : JobDriver
 		};
 
 		return toil;
+	}
+	
+	/// <summary>
+	/// Validates the job before execution to prevent desync issues
+	/// </summary>
+	private bool ValidateJobBeforeExecution()
+	{
+		if (job == null)
+		{
+			Log.Error($"[PickUpAndHaul] VALIDATION ERROR: Job is null for {pawn}");
+			return false;
+		}
+		
+		if (pawn == null)
+		{
+			Log.Error($"[PickUpAndHaul] VALIDATION ERROR: Pawn is null");
+			return false;
+		}
+		
+		// Check if this is a custom job
+		if (job is HaulToInventoryJob customJob)
+		{
+			return customJob.IsValid();
+		}
+		
+		// For regular jobs, validate queue synchronization
+		if (job.targetQueueA == null || job.targetQueueA.Count == 0)
+		{
+			Log.Error($"[PickUpAndHaul] VALIDATION ERROR: Job has empty targetQueueA for {pawn}");
+			return false;
+		}
+		
+		if (job.countQueue == null || job.countQueue.Count == 0)
+		{
+			Log.Error($"[PickUpAndHaul] VALIDATION ERROR: Job has empty countQueue for {pawn}");
+			return false;
+		}
+		
+		if (job.targetQueueA.Count != job.countQueue.Count)
+		{
+			Log.Error($"[PickUpAndHaul] VALIDATION ERROR: Queue synchronization failure for {pawn} - targetQueueA.Count ({job.targetQueueA.Count}) != countQueue.Count ({job.countQueue.Count})");
+			return false;
+		}
+		
+		// Validate that all targets are still valid
+		for (int i = 0; i < job.targetQueueA.Count; i++)
+		{
+			var target = job.targetQueueA[i];
+			if (target == null || target.Thing == null)
+			{
+				Log.Error($"[PickUpAndHaul] VALIDATION ERROR: Found null target at index {i} for {pawn}");
+				return false;
+			}
+			
+			if (target.Thing.Destroyed || !target.Thing.Spawned)
+			{
+				Log.Warning($"[PickUpAndHaul] VALIDATION WARNING: Found destroyed/unspawned target {target.Thing} at index {i} for {pawn}");
+				return false;
+			}
+		}
+		
+		// Validate that all counts are positive
+		for (int i = 0; i < job.countQueue.Count; i++)
+		{
+			if (job.countQueue[i] <= 0)
+			{
+				Log.Error($"[PickUpAndHaul] VALIDATION ERROR: Found non-positive count {job.countQueue[i]} at index {i} for {pawn}");
+				return false;
+			}
+		}
+		
+		return true;
 	}
 }
